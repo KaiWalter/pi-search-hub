@@ -31,6 +31,10 @@ export interface BackendConfig {
 	searchDepth?: "snippets" | "basic";
 	/** Sofya-specific: topic. "general" or "news". Default: general */
 	topic?: "general" | "news";
+	/** Expected monthly request/credit allowance; observability only. */
+	monthlyQuota?: number;
+	/** Warn in the weekly report after this many monthly attempts. */
+	quotaWarningAt?: number;
 }
 
 export interface SearchConfig {
@@ -51,6 +55,12 @@ export interface SearchConfig {
 	cacheMax?: number;
 	/** Default compact output. When true, returns single-line results (title + URL). Default: false. */
 	compact?: boolean;
+	/** Privacy-minimized append-only operational telemetry. Query text is never logged. */
+	telemetry?: {
+		enabled?: boolean;
+		/** Absolute path or ~/ path; defaults to ~/.pi/shared/data/search-telemetry/events.jsonl. */
+		path?: string;
+	};
 	backends?: {
 		duckduckgo?: BackendConfig;
 		marginalia?: BackendConfig;

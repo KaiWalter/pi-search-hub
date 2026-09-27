@@ -53,6 +53,7 @@ import { config, refreshConfig, getActiveBackends, recordLatency, latencyMap } f
 import { BACKEND_DEFS, runBackend } from "./backends/registry.js";
 import { selectBackendsForFallback, reciprocalRankFusion, runFallbackSearch, runTargetedCombine } from "./dispatch.js";
 import { formatResults, formatCombinedResults, formatResultsCompact, formatCombinedResultsCompact } from "./formatters.js";
+import { appendSearchTelemetry, quotaMetadata, type SearchAttemptTelemetry } from "./telemetry.js";
 
 
 
@@ -144,19 +145,36 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.setStatus("search", status);
 				onUpdate?.({ content: [{ type: "text", text: `*${status}*` }] });
 			};
+			const attempts: SearchAttemptTelemetry[] = [];
+			const observedRun = async (backend: string, query: string, limit: number, abortSignal?: AbortSignal): Promise<SearchResult[]> => {
+				const started = Date.now();
+				try {
+					const results = await runBackend(backend, query, limit, abortSignal);
+					attempts.push({ backend, outcome: results.length > 0 ? "success" : "empty", resultCount: results.length, latencyMs: Date.now() - started, ...quotaMetadata(config, backend) });
+					return results;
+				} catch (error) {
+					attempts.push({ backend, outcome: "error", resultCount: 0, latencyMs: Date.now() - started, ...quotaMetadata(config, backend) });
+					throw error;
+				}
+			};
+			const logExecution = (mode: "auto-fallback" | "auto-combine" | "auto-targeted-combine" | "specific", finalProvider: string | undefined, resultCount: number, outcome: "success" | "empty" | "error") => {
+				appendSearchTelemetry(config, { schemaVersion: 1, event: "search_execution", ts: new Date().toISOString(), mode, attempts, finalProvider, resultCount, outcome, fallbackActivated: mode === "auto-fallback" && attempts.length > 1, fallbackPath: attempts.map((attempt) => attempt.backend) });
+			};
 
 			if (requestedBackend !== "auto") {
 				// Specific backend requested — try it directly
 				const backendLabel = BACKEND_DEFS[requestedBackend]?.label || requestedBackend;
 				setStatus(`🔍 ${backendLabel}: searching...`);
 				try {
-					const results = await runBackend(requestedBackend, params.query, numResults, signal);
+					const results = await observedRun(requestedBackend, params.query, numResults, signal);
+					logExecution("specific", results.length > 0 ? requestedBackend : undefined, results.length, results.length > 0 ? "success" : "empty");
 					setStatus(`🔍 ${backendLabel}: ${results.length} results`);
 					return {
 						content: [{ type: "text", text: compact ? formatResultsCompact(results) : formatResults(params.query, requestedBackend, results) }],
 						details: { backend: requestedBackend, resultCount: results.length },
 					};
 				} catch (err) {
+					logExecution("specific", undefined, 0, "error");
 					setStatus(`❌ ${backendLabel}: failed`);
 					throw err;
 				}
@@ -181,10 +199,11 @@ export default function (pi: ExtensionAPI) {
 						query: params.query,
 						numResults,
 						signal,
-						runBackend,
+						runBackend: observedRun,
 					});
 
 					if (usableBackendCount === 0) {
+						logExecution("auto-targeted-combine", undefined, 0, "error");
 						setStatus(`❌ targeted combine: no usable backends`);
 						const errors = Array.from(backendStats.entries()).map(([backend, stats]) => (
 							stats.success
@@ -197,6 +216,7 @@ export default function (pi: ExtensionAPI) {
 					const attemptedCount = backendStats.size;
 					const incomplete = usableBackendCount < 3 ? `, exhausted after ${usableBackendCount} usable` : "";
 					setStatus(`🔍 targeted combined: ${combined.length} results (${usableBackendCount}/${attemptedCount} usable${incomplete})`);
+					logExecution("auto-targeted-combine", combined[0]?.backend, combined.length, combined.length > 0 ? "success" : "empty");
 
 					return {
 						content: [
@@ -221,7 +241,7 @@ export default function (pi: ExtensionAPI) {
 				const resultsPerBackend = await Promise.all(
 					activeBackends.map(async (backend) => {
 						try {
-							const results = await runBackend(
+							const results = await observedRun(
 								backend,
 								params.query,
 								Math.ceil(numResults / activeBackends.length),
@@ -267,6 +287,7 @@ export default function (pi: ExtensionAPI) {
 					: [];
 
 				const successCount = successfulBackends.length;
+				logExecution("auto-combine", combined[0]?.backend, combined.length, combined.length > 0 ? "success" : "empty");
 				const failCount = activeBackends.length - successCount;
 				setStatus(`🔍 combined: ${combined.length} results (${successCount} ok${failCount > 0 ? `, ${failCount} failed` : ""})`);
 
@@ -301,7 +322,7 @@ export default function (pi: ExtensionAPI) {
 						const backendLabel = BACKEND_DEFS[candidate]?.label || candidate;
 						attemptTimes.set(candidate, Date.now());
 						setStatus(`🔍 ${backendLabel}: searching...`);
-						const candidateResults = await runBackend(candidate, query, limit, abortSignal);
+						const candidateResults = await observedRun(candidate, query, limit, abortSignal);
 						recordLatency(candidate, Date.now() - (attemptTimes.get(candidate) ?? Date.now()));
 						setStatus(`🔍 ${backendLabel}: ${candidateResults.length} results`);
 						return candidateResults;
@@ -309,10 +330,12 @@ export default function (pi: ExtensionAPI) {
 				});
 
 				if (!backend) {
+					logExecution("auto-fallback", undefined, 0, errors.some((error) => !error.endsWith(": 0 results")) ? "error" : "empty");
 					setStatus(`❌ all backends failed or returned no results`);
 					throw new Error(`All backends failed or returned no results: ${errors.join("; ")}`);
 				}
 
+				logExecution("auto-fallback", backend, results.length, "success");
 				return {
 					content: [
 						{
