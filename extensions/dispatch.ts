@@ -44,6 +44,42 @@ export function selectBackendsForFallback(
 }
 
 // ---------------------------------------------------------------------------
+// Sequential fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * Run ordered backends until one returns usable result rows. An empty result
+ * set is a search miss, not a terminal success: callers can therefore retain
+ * a private/local backend as first choice while falling through to a remote
+ * backend when that backend has no usable public-web results.
+ */
+export async function runFallbackSearch({
+	orderedBackends,
+	query,
+	numResults,
+	signal,
+	runBackend,
+}: {
+	orderedBackends: string[];
+	query: string;
+	numResults: number;
+	signal?: AbortSignal;
+	runBackend: (backend: string, query: string, numResults: number, signal?: AbortSignal) => Promise<SearchResult[]>;
+}): Promise<{ backend?: string; results: SearchResult[]; errors: string[] }> {
+	const errors: string[] = [];
+	for (const backend of orderedBackends) {
+		try {
+			const results = await runBackend(backend, query, numResults, signal);
+			if (results.length > 0) return { backend, results, errors };
+			errors.push(`${backend}: 0 results`);
+		} catch (err) {
+			errors.push(`${backend}: ${(err as Error).message}`);
+		}
+	}
+	return { results: [], errors };
+}
+
+// ---------------------------------------------------------------------------
 // Targeted combine
 // ---------------------------------------------------------------------------
 

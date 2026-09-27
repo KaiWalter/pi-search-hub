@@ -51,7 +51,7 @@ import { getKeySource } from "./credentials.js";
 import { fetchWithReader, fetchWithFallback, readerLabel, DEFAULT_READER_FALLBACK } from "./readers/dispatch.js";
 import { config, refreshConfig, getActiveBackends, recordLatency, latencyMap } from "./config.js";
 import { BACKEND_DEFS, runBackend } from "./backends/registry.js";
-import { selectBackendsForFallback, reciprocalRankFusion, runTargetedCombine } from "./dispatch.js";
+import { selectBackendsForFallback, reciprocalRankFusion, runFallbackSearch, runTargetedCombine } from "./dispatch.js";
 import { formatResults, formatCombinedResults, formatResultsCompact, formatCombinedResultsCompact } from "./formatters.js";
 
 
@@ -291,38 +291,43 @@ export default function (pi: ExtensionAPI) {
 					config.selectionStrategy ?? "sequential",
 					activeBackends,
 				);
-				const errors: string[] = [];
-				for (const backend of orderedBackends) {
-					const backendLabel = BACKEND_DEFS[backend]?.label || backend;
-					const t0 = Date.now();
-					setStatus(`🔍 ${backendLabel}: searching...`);
-					try {
-						const results = await runBackend(backend, params.query, numResults, signal);
-						recordLatency(backend, Date.now() - t0);
-						setStatus(`🔍 ${backendLabel}: ${results.length} results`);
-						return {
-							content: [
-								{
-									type: "text",
-									text: errors.length > 0
-										? `${errors.join("; ")}\n\n${compact ? formatResultsCompact(results) : formatResults(params.query, backend, results)}`
-										: (compact ? formatResultsCompact(results) : formatResults(params.query, backend, results)),
-								},
-							],
-							details: {
-								backend: errors.length > 0 ? `${backend} (fallback)` : backend,
-								resultCount: results.length,
-								errors: errors.length > 0 ? errors : undefined,
-							},
-						};
-					} catch (err) {
-						errors.push(`${backend}: ${(err as Error).message}`);
-						setStatus(`❌ ${backendLabel}: failed, trying next...`);
-					}
+				const attemptTimes = new Map<string, number>();
+				const { backend, results, errors } = await runFallbackSearch({
+					orderedBackends,
+					query: params.query,
+					numResults,
+					signal,
+					runBackend: async (candidate, query, limit, abortSignal) => {
+						const backendLabel = BACKEND_DEFS[candidate]?.label || candidate;
+						attemptTimes.set(candidate, Date.now());
+						setStatus(`🔍 ${backendLabel}: searching...`);
+						const candidateResults = await runBackend(candidate, query, limit, abortSignal);
+						recordLatency(candidate, Date.now() - (attemptTimes.get(candidate) ?? Date.now()));
+						setStatus(`🔍 ${backendLabel}: ${candidateResults.length} results`);
+						return candidateResults;
+					},
+				});
+
+				if (!backend) {
+					setStatus(`❌ all backends failed or returned no results`);
+					throw new Error(`All backends failed or returned no results: ${errors.join("; ")}`);
 				}
 
-				setStatus(`❌ all backends failed`);
-				throw new Error(`All backends failed: ${errors.join("; ")}`);
+				return {
+					content: [
+						{
+							type: "text",
+							text: errors.length > 0
+								? `${errors.join("; ")}\n\n${compact ? formatResultsCompact(results) : formatResults(params.query, backend, results)}`
+								: (compact ? formatResultsCompact(results) : formatResults(params.query, backend, results)),
+						},
+					],
+					details: {
+						backend: errors.length > 0 ? `${backend} (fallback)` : backend,
+						resultCount: results.length,
+						errors: errors.length > 0 ? errors : undefined,
+					},
+				};
 			}
 		},
 	});

@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { reciprocalRankFusion, runTargetedCombine, selectBackendsForFallback } from "../extensions/dispatch.js";
+import { reciprocalRankFusion, runFallbackSearch, runTargetedCombine, selectBackendsForFallback } from "../extensions/dispatch.js";
 import { recordBackendSuccess, recordBackendFailure } from "../extensions/scoring.js";
 import { resolveConfigValue, clearCredentialCache } from "../extensions/credentials.js";
 import { loadConfig } from "../extensions/config.js";
@@ -122,6 +122,31 @@ describe("reciprocalRankFusion", () => {
 	it("returns empty array when no successful backends", () => {
 		const results = reciprocalRankFusion([], 10);
 		expect(results).toHaveLength(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Sequential fallback tests
+// ---------------------------------------------------------------------------
+
+describe("runFallbackSearch", () => {
+	it("falls through after an HTTP-successful empty result set", async () => {
+		const calls: string[] = [];
+		const result = await runFallbackSearch({
+			orderedBackends: ["searxng", "firecrawl"],
+			query: "Kai Walter ZEISS",
+			numResults: 5,
+			runBackend: async (backend) => {
+				calls.push(backend);
+				if (backend === "searxng") return [];
+				return [{ title: "Kai Walter", url: "https://example.com/kai", snippet: "result" }];
+			},
+		});
+
+		expect(calls).toEqual(["searxng", "firecrawl"]);
+		expect(result.backend).toBe("firecrawl");
+		expect(result.results).toHaveLength(1);
+		expect(result.errors).toEqual(["searxng: 0 results"]);
 	});
 });
 
