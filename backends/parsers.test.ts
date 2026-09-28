@@ -350,6 +350,16 @@ describe("parseYoucom", () => {
 		expect(results).toHaveLength(1);
 	});
 
+	it("parses the current v1 results.web envelope", () => {
+		const data = {
+			results: {
+				web: [{ url: "https://example.com/kai", title: "Kai Walter", description: "ZEISS Fellow" }],
+			},
+		};
+		const results = parseYoucom(data, 10);
+		expect(results).toEqual([{ title: "Kai Walter", url: "https://example.com/kai", snippet: "ZEISS Fellow" }]);
+	});
+
 	it("handles empty response", () => {
 		expect(parseYoucom({}, 10)).toHaveLength(0);
 	});

@@ -270,14 +270,19 @@ export function parseLinkup(
 
 // ---------------------------------------------------------------------------
 // You.com
-// Response: { hits: [{ url, title, description, snippets }] }
+// Response: { results: { web: [{ url, title, description, snippets }] } }
+// Legacy responses may use { hits: [...] } or a flat { results: [...] }.
 // ---------------------------------------------------------------------------
 
 export function parseYoucom(
 	data: Record<string, unknown>,
 	numResults: number,
 ): ParsedResult[] {
-	const rawHits = data.hits || data.results;
+	const results = data.results;
+	const nestedWeb = results && typeof results === "object" && !Array.isArray(results)
+		? (results as Record<string, unknown>).web
+		: undefined;
+	const rawHits = nestedWeb || data.hits || results;
 	const hits = Array.isArray(rawHits) ? rawHits : [];
 	return hits.slice(0, numResults).map((r) => {
 		const snippets = Array.isArray(r.snippets) ? (r.snippets as string[]).join(" ") : "";
